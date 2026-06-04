@@ -495,16 +495,39 @@ class YOLOAdapter(ImageAnalysisPort):
                 confidence_scores.append(float(conf))
         
         # 健康状態を判定
+        # 問題3修正: 検出なし時は信頼度0.0（偽りの高信頼度を排除）
         overall_confidence = (
-            np.mean(confidence_scores) if confidence_scores else 0.7
+            float(np.mean(confidence_scores)) if confidence_scores else 0.0
         )
-        
-        health_status = "good"
-        leaf_condition = "healthy"
-        
-        # 検出結果に基づいて判定
+
         class_lower = [c.lower() for c in detected_classes]
-        
+
+        # 問題2修正: COCOモデルの場合、植物クラスが検出されたか確認
+        # COCO植物関連クラス: "potted plant", "vase" など
+        PLANT_RELATED_CLASSES = {"potted plant", "plant", "flower", "vase"}
+        plant_detected = any(
+            c in PLANT_RELATED_CLASSES for c in class_lower
+        )
+
+        # 植物が写っていない（または何も検出されない）場合は判定不能
+        if not detected_classes:
+            return {
+                "overall_health": "unknown",
+                "leaf_condition": "unknown",
+                "growth_stage": "unknown",
+                "confidence_score": 0.0,
+                "detected_objects": [],
+                "detection_confidence": [],
+                "analysis_method": "YOLO v8",
+                "health_notes": "No objects detected. Ensure the image contains a visible plant.",
+                "recommendations": [
+                    "Retake the photo in better lighting",
+                    "Ensure the plant fills most of the frame",
+                ],
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        # 植物病害専用モデル用の判定
         if any("disease" in c or "病気" in c for c in class_lower):
             health_status = "poor"
             leaf_condition = "diseased"
@@ -517,19 +540,33 @@ class YOLOAdapter(ImageAnalysisPort):
         elif any("wilted" in c or "枯れ" in c for c in class_lower):
             health_status = "poor"
             leaf_condition = "wilted"
-        else:
+        elif plant_detected:
+            # COCOモデルで植物クラスは検出されたが異常クラスなし
+            # → 「健康」と断言せず、LLMによる追加解析を推奨
             health_status = "good"
             leaf_condition = "healthy"
-        
+        else:
+            # 植物以外のオブジェクトのみ検出 → 植物が映っていない可能性
+            health_status = "unknown"
+            leaf_condition = "unknown"
+
+        health_notes = (
+            f"Detected: {', '.join(set(detected_classes))}"
+            if detected_classes
+            else "No abnormalities detected"
+        )
+        if not plant_detected and detected_classes:
+            health_notes += " (Warning: No plant class detected — consider using a plant-specific model)"
+
         return {
             "overall_health": health_status,
             "leaf_condition": leaf_condition,
             "growth_stage": "mature",
-            "confidence_score": float(overall_confidence),
+            "confidence_score": overall_confidence,
             "detected_objects": detected_classes,
             "detection_confidence": confidence_scores,
             "analysis_method": "YOLO v8",
-            "health_notes": f"Detected: {', '.join(set(detected_classes))}" if detected_classes else "No abnormalities detected",
+            "health_notes": health_notes,
             "recommendations": [
                 "Monitor plant regularly",
                 "Ensure proper watering",
