@@ -175,7 +175,7 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
 """
         
         response = await client.chat.completions.create(
-            model="gpt-4-vision-preview",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
@@ -583,19 +583,22 @@ class LLMTextGeneratorAdapter(DiaryGenerationPort):
         self,
         api_base: str = "http://localhost:1234/v1",
         model: str = "mistral-7b-instruct",
+        api_key: str = "lm-studio",
     ):
         """
         初期化
         
         Args:
-            api_base: LLM APIベースURL（LM Studio等）
+            api_base: LLM APIベースURL（LM Studio等 or OpenAI）
             model: LLMモデル
-                - mistral-7b-instruct
-                - llama-2-13b-chat
-                - neural-chat-7b
+                - mistral-7b-instruct (LM Studio)
+                - llama-2-13b-chat (LM Studio)
+                - gpt-4o-mini (OpenAI)
+            api_key: APIキー（OpenAI使用時は実キー、LM Studioはダミーでよい）
         """
         self.api_base = api_base
         self.model = model
+        self.api_key = api_key
     
     async def generate(self, analysis_data: dict) -> str:
         """LLMで高品質な観察日記を生成"""
@@ -605,7 +608,7 @@ class LLMTextGeneratorAdapter(DiaryGenerationPort):
             raise ImportError("openai required: pip install openai")
 
         client = AsyncOpenAI(
-            api_key="lm-studio",
+            api_key=self.api_key,
             base_url=self.api_base,
             timeout=60.0,
         )
@@ -945,3 +948,127 @@ class YOLODifferenceAnalysisAdapter(DifferenceAnalysisPort):
             recommendations.append("🌱 植物は安定した状態です。定期的な監視を継続してください")
         
         return recommendations
+
+
+class LLMDifferenceAnalysisAdapter(YOLODifferenceAnalysisAdapter):
+    """LLMビジョンのみを使った差分解析アダプター（YOLO不要）
+
+    LMStudioAdapter または OpenAIVisionAdapter を渡すことで動作する。
+    ヘルパーメソッド（_compare_health 等）は YOLODifferenceAnalysisAdapter を継承。
+    """
+
+    def __init__(
+        self,
+        lvm_adapter: LVMAdapter,
+        llm_api_base: str = "http://localhost:1234/v1",
+        llm_model: str = "mistral-7b-instruct",
+        llm_api_key: str = "lm-studio",
+    ):
+        """
+        初期化
+
+        Args:
+            lvm_adapter: 画像解析に使うLVMアダプター（LMStudioAdapter / OpenAIVisionAdapter）
+            llm_api_base: 日記生成用LLMのAPIベースURL
+            llm_model: 日記生成用LLMのモデル名
+            llm_api_key: 日記生成用LLMのAPIキー（OpenAI使用時は実キーを指定）
+        """
+        # 親クラスの __init__ は呼ばない（YOLOを使わない）
+        self.lvm = lvm_adapter
+        self.llm = LLMTextGeneratorAdapter(
+            api_base=llm_api_base,
+            model=llm_model,
+            api_key=llm_api_key,
+        )
+
+    async def analyze_difference(
+        self,
+        old_image_path: str,
+        new_image_path: str,
+        generate_diary: bool = False,
+    ) -> dict:
+        """LVMで両画像を解析し差分を算出"""
+        import numpy as np
+        from PIL import Image
+
+        # LVMで両画像を解析
+        old_result = await self.lvm.analyze(old_image_path)
+        new_result = await self.lvm.analyze(new_image_path)
+
+        # ピクセル差分計算
+        old_image = Image.open(old_image_path).convert("RGB")
+        new_image = Image.open(new_image_path).convert("RGB")
+
+        if old_image.size != new_image.size:
+            old_image = old_image.resize(new_image.size, Image.Resampling.LANCZOS)
+
+        old_array = np.array(old_image, dtype=np.float32)
+        new_array = np.array(new_image, dtype=np.float32)
+        diff_ratio = float(np.mean(np.abs(old_array - new_array)) / 255.0)
+
+        old_health = old_result.get("overall_health", "good")
+        new_health = new_result.get("overall_health", "good")
+        old_leaf = old_result.get("leaf_condition", "healthy")
+        new_leaf = new_result.get("leaf_condition", "healthy")
+
+        health_change = self._compare_health(old_health, new_health)
+        leaf_change = self._compare_condition(old_leaf, new_leaf)
+
+        # LLMの結果では visible_diseases を issues として扱う
+        old_detected = set(
+            old_result.get("detected_objects", old_result.get("visible_diseases", []))
+        )
+        new_detected = set(
+            new_result.get("detected_objects", new_result.get("visible_diseases", []))
+        )
+
+        new_issues = new_detected - old_detected
+        resolved_issues = old_detected - new_detected
+        persistent_issues = old_detected & new_detected
+
+        growth_progress = self._calculate_growth_progress(
+            new_issues, resolved_issues, persistent_issues, diff_ratio
+        )
+
+        avg_confidence = (
+            old_result.get("confidence_score", 0.7)
+            + new_result.get("confidence_score", 0.7)
+        ) / 2
+
+        difference_report = self._generate_difference_report(
+            old_result, new_result, new_issues, resolved_issues, persistent_issues
+        )
+
+        result = {
+            "health_change": health_change,
+            "leaf_condition_change": leaf_change,
+            "growth_progress": growth_progress,
+            "confidence_score": avg_confidence,
+            "pixel_difference_ratio": diff_ratio,
+            "old_health_status": old_health,
+            "new_health_status": new_health,
+            "old_leaf_condition": old_leaf,
+            "new_leaf_condition": new_leaf,
+            "new_issues_detected": list(new_issues),
+            "resolved_issues": list(resolved_issues),
+            "persistent_issues": list(persistent_issues),
+            "difference_report": difference_report,
+            "old_analysis": old_result,
+            "new_analysis": new_result,
+            "timestamp": datetime.now().isoformat(),
+            "analysis_method": "LLM Vision Difference Analysis",
+            "recommendations": self._generate_recommendations(
+                health_change, leaf_change, new_issues
+            ),
+            "observation_diary": None,
+        }
+
+        if generate_diary:
+            try:
+                result["observation_diary"] = await self.llm.generate(
+                    {**result, "is_difference_analysis": True}
+                )
+            except Exception as e:
+                result["observation_diary"] = f"日記生成に失敗しました: {str(e)}"
+
+        return result

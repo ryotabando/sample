@@ -11,6 +11,7 @@ from .adapters import (
     FileAnalysisRepositoryAdapter,
     FilePlantRepositoryAdapter,
     HybridAnalysisAdapter,
+    LLMDifferenceAnalysisAdapter,
     LLMTextGeneratorAdapter,
     LMStudioAdapter,
     MockDiaryAdapter,
@@ -52,10 +53,24 @@ class Container:
             )
         else:
             self.lvm_service = MockLVMAdapter()
-        
+
         # Diary Service
-        if lvm_service_type == "yolo_hybrid":
-            # YOLOの場合、LLMテキスト生成を使用
+        if lvm_service_type == "lm_studio":
+            llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
+            llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
+            self.diary_service = LLMTextGeneratorAdapter(
+                api_base=llm_api_base,
+                model=llm_model,
+            )
+        elif lvm_service_type == "openai":
+            openai_key = os.getenv("OPENAI_API_KEY", "")
+            openai_diary_model = os.getenv("OPENAI_DIARY_MODEL", "gpt-4o-mini")
+            self.diary_service = LLMTextGeneratorAdapter(
+                api_base="https://api.openai.com/v1",
+                model=openai_diary_model,
+                api_key=openai_key,
+            )
+        elif lvm_service_type == "yolo_hybrid":
             llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
             llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
             self.diary_service = LLMTextGeneratorAdapter(
@@ -64,13 +79,31 @@ class Container:
             )
         else:
             self.diary_service = MockDiaryAdapter()
-        
+
         # Repositories
         self.plant_repo = FilePlantRepositoryAdapter()
         self.analysis_repo = FileAnalysisRepositoryAdapter()
 
-        # Difference Analysis Adapter (差分解析用) - yolo_hybrid モード時のみ初期化
-        if lvm_service_type == "yolo_hybrid":
+        # Difference Analysis Adapter (差分解析用)
+        if lvm_service_type == "lm_studio":
+            llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
+            llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
+            self.difference_analysis_adapter = LLMDifferenceAnalysisAdapter(
+                lvm_adapter=self.lvm_service,
+                llm_api_base=llm_api_base,
+                llm_model=llm_model,
+            )
+        elif lvm_service_type == "openai":
+            from .adapters import OpenAIVisionAdapter
+            openai_key = os.getenv("OPENAI_API_KEY", "")
+            openai_diary_model = os.getenv("OPENAI_DIARY_MODEL", "gpt-4o-mini")
+            self.difference_analysis_adapter = LLMDifferenceAnalysisAdapter(
+                lvm_adapter=OpenAIVisionAdapter(api_key=openai_key),
+                llm_api_base="https://api.openai.com/v1",
+                llm_model=openai_diary_model,
+                llm_api_key=openai_key,
+            )
+        elif lvm_service_type == "yolo_hybrid":
             yolo_model = os.getenv("YOLO_MODEL", "yolov8s-seg.pt")
             llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
             llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
