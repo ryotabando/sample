@@ -5,6 +5,7 @@ Application Layer - Use Case Orchestration
 
 from dataclasses import dataclass
 from typing import Optional
+
 from .domain import AnalyzePlantUseCase, PlantAnalysisResult
 
 
@@ -116,6 +117,7 @@ class PlantAnalysisApplicationService:
         diff_result = await difference_adapter.analyze_difference(
             old_image_path=request.old_image_path,
             new_image_path=request.new_image_path,
+            generate_diary=generate_diary,
         )
         
         # DTOに変換して返す

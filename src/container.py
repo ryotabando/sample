@@ -4,25 +4,30 @@ Dependency Injection Container
 """
 
 import os
-from .domain import AnalyzePlantUseCase
-from .application import PlantAnalysisApplicationService
+
+from dotenv import load_dotenv
+
 from .adapters import (
-    MockLVMAdapter,
-    MockDiaryAdapter,
-    FilePlantRepositoryAdapter,
     FileAnalysisRepositoryAdapter,
-    LMStudioAdapter,
-    YOLOAdapter,
-    LLMTextGeneratorAdapter,
+    FilePlantRepositoryAdapter,
     HybridAnalysisAdapter,
+    LLMTextGeneratorAdapter,
+    LMStudioAdapter,
+    MockDiaryAdapter,
+    MockLVMAdapter,
+    YOLOAdapter,
     YOLODifferenceAnalysisAdapter,
 )
+from .application import PlantAnalysisApplicationService
+from .domain import AnalyzePlantUseCase
 
 
 class Container:
     """依存関係注入コンテナ"""
     
     def __init__(self):
+        load_dotenv()
+
         # LVM Service
         lvm_service_type = os.getenv("LVM_SERVICE", "mock")
         
@@ -63,16 +68,19 @@ class Container:
         # Repositories
         self.plant_repo = FilePlantRepositoryAdapter()
         self.analysis_repo = FileAnalysisRepositoryAdapter()
-        
-        # Difference Analysis Adapter (差分解析用)
-        yolo_model = os.getenv("YOLO_MODEL", "yolov8s-seg.pt")
-        llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
-        llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
-        self.difference_analysis_adapter = YOLODifferenceAnalysisAdapter(
-            yolo_model=yolo_model,
-            llm_api_base=llm_api_base,
-            llm_model=llm_model,
-        )
+
+        # Difference Analysis Adapter (差分解析用) - yolo_hybrid モード時のみ初期化
+        if lvm_service_type == "yolo_hybrid":
+            yolo_model = os.getenv("YOLO_MODEL", "yolov8s-seg.pt")
+            llm_api_base = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234/v1")
+            llm_model = os.getenv("LLM_MODEL", "mistral-7b-instruct")
+            self.difference_analysis_adapter = YOLODifferenceAnalysisAdapter(
+                yolo_model=yolo_model,
+                llm_api_base=llm_api_base,
+                llm_model=llm_model,
+            )
+        else:
+            self.difference_analysis_adapter = None
         
         # Domain Use Case
         self.analyze_plant_use_case = AnalyzePlantUseCase(

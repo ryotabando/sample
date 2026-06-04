@@ -3,34 +3,34 @@ Tests - Unit and Integration Tests
 テストコード
 """
 
-import pytest
 import asyncio
-from pathlib import Path
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.domain import (
-    Plant,
-    PlantAnalysisResult,
-    PlantDifferenceAnalysisResult,
-    HealthStatus,
-    LeafCondition,
-    AnalyzePlantUseCase,
+import pytest
+
+from src.adapters import (
+    FileAnalysisRepositoryAdapter,
+    FilePlantRepositoryAdapter,
+    MockDiaryAdapter,
+    MockLVMAdapter,
 )
 from src.application import (
     AnalysisRequest,
-    DifferenceAnalysisRequest,
     AnalysisResponse,
+    DifferenceAnalysisRequest,
     DifferenceAnalysisResponse,
     PlantAnalysisApplicationService,
 )
-from src.adapters import (
-    MockLVMAdapter,
-    MockDiaryAdapter,
-    FilePlantRepositoryAdapter,
-    FileAnalysisRepositoryAdapter,
+from src.domain import (
+    AnalyzePlantUseCase,
+    HealthStatus,
+    LeafCondition,
+    Plant,
+    PlantAnalysisResult,
+    PlantDifferenceAnalysisResult,
 )
-
 
 # ========== Unit Tests ==========
 
@@ -226,7 +226,7 @@ class TestDifferenceAnalysis:
     def test_difference_analysis_result_validation(self):
         """差分解析結果の妥当性確認"""
         from src.domain import PlantDifferenceAnalysisResult
-        
+
         # 信頼度が範囲外
         with pytest.raises(ValueError):
             PlantDifferenceAnalysisResult(
@@ -242,72 +242,79 @@ class TestDifferenceAnalysis:
     
     @pytest.mark.asyncio
     async def test_yolo_difference_adapter(self):
-        """YOLODifferenceAnalysisAdapterテスト"""
+        """YOLODifferenceAnalysisAdapterテスト - YOLO/LLM/numpy/PILをモック化"""
+        import sys
+
         from src.adapters import YOLODifferenceAnalysisAdapter
-        
-        # Note: This test requires YOLO to be installed
-        # and images to exist, so we mock it
-        adapter = YOLODifferenceAnalysisAdapter()
-        
-        # Mock the analyze methods
-        adapter.yolo.analyze = AsyncMock(return_value={
+
+        mock_analysis = {
             "overall_health": "good",
             "leaf_condition": "healthy",
             "detected_objects": [],
             "confidence_score": 0.8,
-        })
-        
-        result = await adapter.analyze_difference(
-            old_image_path="old.png",
-            new_image_path="new.png",
-        )
-        
+        }
+
+        # numpy モック
+        numpy_mock = MagicMock()
+        numpy_mock.array.return_value = MagicMock()
+        numpy_mock.abs.return_value = MagicMock()
+        numpy_mock.mean.return_value = 10.0
+
+        # PIL モック
+        img_instance = MagicMock()
+        img_instance.size = (100, 100)
+        img_instance.convert.return_value = img_instance
+        pil_image_mock = MagicMock()
+        pil_image_mock.open.return_value = img_instance
+        pil_mock = MagicMock()
+        pil_mock.Image = pil_image_mock
+
+        with patch("src.adapters.YOLOAdapter.__init__", return_value=None), \
+             patch("src.adapters.LLMTextGeneratorAdapter.__init__", return_value=None):
+            adapter = YOLODifferenceAnalysisAdapter()
+            adapter.yolo = MagicMock()
+            adapter.yolo.analyze = AsyncMock(return_value=mock_analysis)
+            adapter.llm = MagicMock()
+
+        with patch.dict(sys.modules, {"numpy": numpy_mock, "PIL": pil_mock, "PIL.Image": pil_image_mock}):
+            result = await adapter.analyze_difference(
+                old_image_path="old.png",
+                new_image_path="new.png",
+            )
+
         assert "health_change" in result
         assert "leaf_condition_change" in result
         assert "growth_progress" in result
         assert "confidence_score" in result
     
     def test_health_comparison(self):
-        """健康状態比較テスト"""
+        """健康状態比較テスト - __init__ をバイパスして純粋ロジックのみ検証"""
         from src.adapters import YOLODifferenceAnalysisAdapter
-        
-        adapter = YOLODifferenceAnalysisAdapter()
-        
-        # Test improvement
-        change = adapter._compare_health("fair", "good")
-        assert change == "improved"
-        
-        # Test decline
-        change = adapter._compare_health("good", "fair")
-        assert change == "declined"
-        
-        # Test stable
-        change = adapter._compare_health("good", "good")
-        assert change == "stable"
+
+        adapter = object.__new__(YOLODifferenceAnalysisAdapter)
+
+        assert adapter._compare_health("fair", "good") == "improved"
+        assert adapter._compare_health("good", "fair") == "declined"
+        assert adapter._compare_health("good", "good") == "stable"
     
     def test_leaf_condition_comparison(self):
-        """葉の状態比較テスト"""
+        """葉の状態比較テスト - __init__ をバイパスして純粋ロジックのみ検証"""
         from src.adapters import YOLODifferenceAnalysisAdapter
-        
-        adapter = YOLODifferenceAnalysisAdapter()
-        
-        # Test improvement
-        change = adapter._compare_condition("stressed", "healthy")
-        assert change == "improved"
-        
-        # Test decline
-        change = adapter._compare_condition("healthy", "diseased")
-        assert change == "declined"
+
+        adapter = object.__new__(YOLODifferenceAnalysisAdapter)
+
+        assert adapter._compare_condition("stressed", "healthy") == "improved"
+        assert adapter._compare_condition("healthy", "diseased") == "declined"
         
         # Test stable
         change = adapter._compare_condition("healthy", "healthy")
         assert change == "stable"
     
     def test_growth_progress_calculation(self):
-        """成長進捗計算テスト"""
+        """成長進捗計算テスト - __init__ をバイパスして純粋ロジックのみ検証"""
         from src.adapters import YOLODifferenceAnalysisAdapter
-        
-        adapter = YOLODifferenceAnalysisAdapter()
+
+        adapter = object.__new__(YOLODifferenceAnalysisAdapter)
         
         # Test: new issues detected → declined
         progress = adapter._calculate_growth_progress(

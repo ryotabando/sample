@@ -2,14 +2,16 @@
 Main Application Entry Point
 """
 
-import asyncio
 import argparse
+import asyncio
+import re
 import sys
+from pathlib import Path
 from typing import Optional
 
-from .container import Container
+from .adapters import CLIAdapter, ImageLoader, JSONPresenter, MarkdownPresenter
 from .application import AnalysisRequest, DifferenceAnalysisRequest
-from .adapters import CLIAdapter, JSONPresenter, MarkdownPresenter, ImageLoader
+from .container import Container
 
 
 def parse_args():
@@ -41,11 +43,26 @@ def parse_args():
         "--old-image", required=True, help="Old/furui image path (reference image)"
     )
     diff.add_argument("--new-image", required=True, help="New image path")
-    diff.add_argument("--diary", action="store_true", help="Generate diary")
+    diff.add_argument("--diary", action="store_true", help="Generate LLM diary")
     diff.add_argument(
         "--format", choices=["table", "json", "markdown"], default="table"
     )
-    
+
+    # Scan command - auto-discover image pairs in directory
+    scan = subparsers.add_parser(
+        "scan",
+        help="Auto-discover xxxx_1.ext / xxxx_2.ext pairs in image/ and run diff analysis",
+    )
+    scan.add_argument("--plant-id", required=True, help="Plant identifier")
+    scan.add_argument("--species", required=True, help="Plant species")
+    scan.add_argument(
+        "--image-dir", default="image", help="Directory to scan (default: image/)"
+    )
+    scan.add_argument("--diary", action="store_true", help="Generate LLM diary")
+    scan.add_argument(
+        "--format", choices=["table", "json", "markdown"], default="table"
+    )
+
     # List command
     list_cmd = subparsers.add_parser("list", help="List analyzed plants")
     list_cmd.add_argument("--format", choices=["table", "json"], default="table")
@@ -113,10 +130,14 @@ async def difference_analyze_plants(args):
     if not ImageLoader.validate(args.new_image):
         print(f"❌ Invalid new image: {args.new_image}")
         sys.exit(1)
-    
+
     # DI コンテナからサービスを取得
     container = Container()
-    
+
+    if container.difference_analysis_adapter is None:
+        print("❌ diff requires LVM_SERVICE=yolo_hybrid in .env")
+        sys.exit(1)
+
     # リクエストを作成
     request = DifferenceAnalysisRequest(
         plant_id=args.plant_id,
@@ -222,6 +243,98 @@ async def list_plants(args):
         print(json.dumps(plants_data, indent=2, ensure_ascii=False))
 
 
+def find_image_pairs(image_dir: str) -> list[tuple[Path, Path]]:
+    """image_dir 内の連番ペア（xxxx_N.ext）を自動検出する。
+    
+    例: plant_1.jpg, plant_2.jpg → (plant_1.jpg, plant_2.jpg)
+    同じプレフィックスのファイルが複数あれば、番号最小を旧画像・最大を新画像とする。
+    """
+    pattern = re.compile(r'^(.+?)_(\d+)(\.\w+)$')
+    groups: dict[str, list[tuple[int, Path]]] = {}
+
+    dir_path = Path(image_dir)
+    if not dir_path.exists():
+        return []
+
+    for f in sorted(dir_path.iterdir()):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in ImageLoader.SUPPORTED_FORMATS:
+            continue
+        m = pattern.match(f.name)
+        if m:
+            prefix = m.group(1)
+            num = int(m.group(2))
+            groups.setdefault(prefix, []).append((num, f))
+
+    pairs = []
+    for items in groups.values():
+        items.sort(key=lambda x: x[0])
+        if len(items) >= 2:
+            pairs.append((items[0][1], items[-1][1]))
+
+    return pairs
+
+
+async def scan_images(args) -> None:
+    """image/ ディレクトリのペア画像を自動検出して差分解析"""
+    pairs = find_image_pairs(args.image_dir)
+
+    if not pairs:
+        print(f"❌ No image pairs found in '{args.image_dir}'")
+        print(f"   Expected naming: xxxx_1.jpg / xxxx_2.jpg (same prefix, sequential numbers)")
+        sys.exit(1)
+
+    print(f"🔍 Found {len(pairs)} image pair(s) in '{args.image_dir}'")
+
+    container = Container()
+    if container.difference_analysis_adapter is None:
+        print("❌ scan requires LVM_SERVICE=yolo_hybrid in .env")
+        sys.exit(1)
+
+    for old_image, new_image in pairs:
+        print(f"\n🔄 Analyzing: {old_image.name} (old)  →  {new_image.name} (new)")
+
+        request = DifferenceAnalysisRequest(
+            plant_id=args.plant_id,
+            species=args.species,
+            old_image_path=str(old_image),
+            new_image_path=str(new_image),
+        )
+
+        response = await container.plant_analysis_app.analyze_difference(
+            request=request,
+            difference_adapter=container.difference_analysis_adapter,
+            generate_diary=args.diary,
+        )
+
+        response_dict = {
+            "plant_id": response.plant_id,
+            "old_image": response.old_image_path,
+            "new_image": response.new_image_path,
+            "health_change": response.health_change,
+            "leaf_condition_change": response.leaf_condition_change,
+            "growth_progress": response.growth_progress,
+            "confidence_score": response.confidence_score,
+            "details": response.details,
+            "difference_report": response.difference_report,
+        }
+
+        if response.diary:
+            response_dict["diary"] = {
+                "date": response.diary.date,
+                "content": response.diary.content,
+                "recommendations": response.diary.recommendations,
+            }
+
+        if args.format == "table":
+            print_difference_result(response_dict)
+        elif args.format == "json":
+            print(JSONPresenter.format(response_dict))
+        elif args.format == "markdown":
+            print(MarkdownPresenter.format(response_dict))
+
+
 async def main():
     """メイン処理"""
     args = parse_args()
@@ -230,6 +343,8 @@ async def main():
         await analyze_plant(args)
     elif args.command == "diff":
         await difference_analyze_plants(args)
+    elif args.command == "scan":
+        await scan_images(args)
     elif args.command == "list":
         await list_plants(args)
     else:

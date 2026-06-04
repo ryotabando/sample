@@ -4,10 +4,9 @@ Domain Layer - Core Business Logic
 """
 
 from dataclasses import dataclass
-from enum import Enum
 from datetime import datetime
+from enum import Enum
 from typing import Optional
-
 
 # === Value Objects ===
 
@@ -120,8 +119,13 @@ class AnalysisRepositoryPort:
 
 class DifferenceAnalysisPort:
     """差分解析ポート（アウトバウンド）"""
-    
-    async def analyze_difference(self, old_image_path: str, new_image_path: str) -> dict:
+
+    async def analyze_difference(
+        self,
+        old_image_path: str,
+        new_image_path: str,
+        generate_diary: bool = False,
+    ) -> dict:
         """2つの画像の差分を解析"""
         raise NotImplementedError
 
@@ -169,10 +173,20 @@ class AnalyzePlantUseCase:
         analysis_data = await self.image_analyzer.analyze(image_path)
         
         # 4. 結果をValue Objectに変換
+        try:
+            health_status = HealthStatus(analysis_data.get("overall_health", "fair"))
+        except ValueError:
+            health_status = HealthStatus.FAIR
+
+        try:
+            leaf_condition = LeafCondition(analysis_data.get("leaf_condition", "stressed"))
+        except ValueError:
+            leaf_condition = LeafCondition.STRESSED
+
         result = PlantAnalysisResult(
             plant_id=plant_id,
-            overall_health=HealthStatus(analysis_data["overall_health"]),
-            leaf_condition=LeafCondition(analysis_data["leaf_condition"]),
+            overall_health=health_status,
+            leaf_condition=leaf_condition,
             growth_stage=analysis_data.get("growth_stage", "unknown"),
             confidence_score=analysis_data.get("confidence_score", 0.0),
             details=analysis_data,

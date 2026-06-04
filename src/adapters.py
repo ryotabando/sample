@@ -6,21 +6,20 @@ Adapter Layer - External Interfaces
 import asyncio
 import json
 import os
+from abc import abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
-from abc import abstractmethod
 
 from .domain import (
-    ImageAnalysisPort,
-    DiaryGenerationPort,
-    PlantRepositoryPort,
     AnalysisRepositoryPort,
+    DiaryGenerationPort,
     DifferenceAnalysisPort,
+    ImageAnalysisPort,
     Plant,
     PlantAnalysisResult,
+    PlantRepositoryPort,
 )
-
 
 # ========== Input Adapters (入力アダプター) ==========
 
@@ -191,8 +190,22 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
             ],
             max_tokens=1024,
         )
-        
-        return json.loads(response.choices[0].message.content)
+
+        response_text = response.choices[0].message.content or ""
+        import re
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        try:
+            return json.loads(json_match.group() if json_match else response_text)
+        except (json.JSONDecodeError, ValueError):
+            return {
+                "overall_health": "fair",
+                "leaf_condition": "stressed",
+                "growth_stage": "unknown",
+                "confidence_score": 0.0,
+                "health_notes": "LLM response could not be parsed",
+                "recommendations": [],
+                "timestamp": datetime.now().isoformat(),
+            }
 
 
 class LMStudioAdapter(LVMAdapter):
@@ -264,16 +277,24 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
                 temperature=0.7,
             )
             
-            response_text = response.choices[0].message.content
-            
+            response_text = response.choices[0].message.content or ""
+
             # JSON部分を抽出（マークダウンコード等でラップされている場合）
             import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            else:
-                return json.loads(response_text)
-                
+            try:
+                return json.loads(json_match.group() if json_match else response_text)
+            except (json.JSONDecodeError, ValueError):
+                return {
+                    "overall_health": "fair",
+                    "leaf_condition": "stressed",
+                    "growth_stage": "unknown",
+                    "confidence_score": 0.0,
+                    "health_notes": "LLM response could not be parsed",
+                    "recommendations": [],
+                    "timestamp": datetime.now().isoformat(),
+                }
+
         except Exception as e:
             raise RuntimeError(
                 f"LM Studio connection failed. "
@@ -447,8 +468,8 @@ class YOLOAdapter(ImageAnalysisPort):
     async def analyze(self, image_path: str) -> dict:
         """YOLOで高精度解析"""
         try:
-            from PIL import Image
             import numpy as np
+            from PIL import Image
         except ImportError:
             raise ImportError("pillow required: pip install pillow")
         
@@ -545,37 +566,54 @@ class LLMTextGeneratorAdapter(DiaryGenerationPort):
             from openai import AsyncOpenAI
         except ImportError:
             raise ImportError("openai required: pip install openai")
-        
+
         client = AsyncOpenAI(
             api_key="lm-studio",
             base_url=self.api_base,
-            timeout=httpx.Timeout(60.0),
+            timeout=60.0,
         )
-        
-        # YOLOまたはLVMの解析結果から文章を生成
-        health = analysis_data.get("overall_health", "不明")
-        detected = analysis_data.get("detected_objects", [])
-        leaf_condition = analysis_data.get("leaf_condition", "不明")
-        
-        prompt = f"""
-Based on this plant analysis data, write a detailed and warm observation diary entry in Japanese.
-Use the provided observations to create an informative yet personal note.
 
-Analysis Data:
-- Health Status: {health}
-- Leaf Condition: {leaf_condition}
-- Detected Issues: {', '.join(detected) if detected else 'None'}
+        # 差分解析結果か単体解析結果かでプロンプトを分岐
+        if analysis_data.get("is_difference_analysis"):
+            old_health = analysis_data.get("old_health_status", "unknown")
+            new_health = analysis_data.get("new_health_status", "unknown")
+            health_change = analysis_data.get("health_change", "stable")
+            leaf_change = analysis_data.get("leaf_condition_change", "stable")
+            new_issues = analysis_data.get("new_issues_detected", [])
+            resolved = analysis_data.get("resolved_issues", [])
+            persistent = analysis_data.get("persistent_issues", [])
 
-Write in a first-person, observational tone as if written by a plant caretaker.
-Include:
-1. Current observations
-2. Plant's condition assessment
-3. Care recommendations
-4. Next steps
+            prompt = f"""
+以下の植物差分解析結果をもとに、日本語で詳しい観察日記を書いてください。
 
-Keep it concise but detailed (3-5 paragraphs).
+差分解析データ:
+- 前回の健康状態: {old_health} → 今回: {new_health}
+- 健康状態の変化: {health_change}
+- 葉の状態変化: {leaf_change}
+- 新たに検出された問題: {', '.join(new_issues) if new_issues else 'なし'}
+- 解決した問題: {', '.join(resolved) if resolved else 'なし'}
+- 継続中の問題: {', '.join(persistent) if persistent else 'なし'}
+
+前回からの変化に注目しながら、植物を世話する人の目線で記辺ってください。
+現在の観察、変化の評価、ケアの推奨、下回のケア予定を含めて3～5段落で簡潔にまとめてください。
 """
-        
+        else:
+            health = analysis_data.get("overall_health", "不明")
+            detected = analysis_data.get("detected_objects", [])
+            leaf_condition = analysis_data.get("leaf_condition", "不明")
+
+            prompt = f"""
+以下の植物解析データをもとに、日本語で詳しい観察日記を書いてください。
+
+解析データ:
+- 健康状態: {health}
+- 葉の状態: {leaf_condition}
+- 検出された問題: {', '.join(detected) if detected else 'なし'}
+
+植物を世話する人の目線で記辺ってください。
+現在の観察、健康状態の評価、ケアの推奨、次回のケア予定を含めて3～5段落で簡潔にまとめてください。
+"""
+
         try:
             response = await client.chat.completions.create(
                 model=self.model,
@@ -589,9 +627,9 @@ Keep it concise but detailed (3-5 paragraphs).
                 max_tokens=500,
                 temperature=0.7,
             )
-            
-            return response.choices[0].message.content
-            
+
+            return response.choices[0].message.content or ""
+
         except Exception as e:
             raise RuntimeError(
                 f"LLM text generation failed. "
@@ -619,10 +657,6 @@ class HybridAnalysisAdapter(ImageAnalysisPort):
         """YOLOで解析後、詳細情報を取得"""
         # YOLOで画像解析
         result = await self.yolo.analyze(image_path)
-        
-        # LLMが処理するための情報を含める
-        result["requires_llm_processing"] = True
-        
         return result
 
 
@@ -650,16 +684,19 @@ class YOLODifferenceAnalysisAdapter(DifferenceAnalysisPort):
         )
     
     async def analyze_difference(
-        self, old_image_path: str, new_image_path: str
+        self,
+        old_image_path: str,
+        new_image_path: str,
+        generate_diary: bool = False,
     ) -> dict:
         """
         ふるい画像（old_image_path）と新規画像（new_image_path）の差分を解析
-        
+
         画像番号が若い順序（古い画像がふるい画像）
         """
         import numpy as np
         from PIL import Image
-        
+
         # 両画像をYOLOで解析
         old_result = await self.yolo.analyze(old_image_path)
         new_result = await self.yolo.analyze(new_image_path)
@@ -713,8 +750,8 @@ class YOLODifferenceAnalysisAdapter(DifferenceAnalysisPort):
         difference_report = self._generate_difference_report(
             old_result, new_result, new_issues, resolved_issues, persistent_issues
         )
-        
-        return {
+
+        result = {
             "health_change": health_change,
             "leaf_condition_change": leaf_change,
             "growth_progress": growth_progress,
@@ -735,7 +772,18 @@ class YOLODifferenceAnalysisAdapter(DifferenceAnalysisPort):
             "recommendations": self._generate_recommendations(
                 health_change, leaf_change, new_issues
             ),
+            "observation_diary": None,
         }
+
+        if generate_diary:
+            try:
+                result["observation_diary"] = await self.llm.generate(
+                    {**result, "is_difference_analysis": True}
+                )
+            except Exception as e:
+                result["observation_diary"] = f"日記生成に失敗しました: {str(e)}"
+
+        return result
     
     def _compare_health(self, old: str, new: str) -> str:
         """健康状態の変化を判定"""

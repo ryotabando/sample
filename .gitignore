@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 仮想環境
+.venv/
+venv/
+env/
+
+# 環境設定（シークレット含む）
+.env
+
+# テスト・カバレッジ
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 実行時・テスト時に自動生成されるデータ
+data/
+
+# YOLO モデル（大容量バイナリ）
+*.pt
+
+# OS
+.DS_Store
+Thumbs.db
