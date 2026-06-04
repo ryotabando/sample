@@ -112,7 +112,33 @@ class MarkdownPresenter:
 
 class LVMAdapter(ImageAnalysisPort):
     """LVM画像解析アダプター - 抽象基底"""
-    pass
+
+    @staticmethod
+    def _normalize_llm_response(data: dict) -> dict:
+        """LLMレスポンスを内部フォーマットに正規化
+
+        - visible_diseases → detected_objects に統一
+        - confidence_score が不正値（文字列・None・範囲外）の場合は 0.85 にフォールバック
+        """
+        # detected_objects が未設定の場合は visible_diseases から補完
+        if "detected_objects" not in data:
+            data["detected_objects"] = data.get("visible_diseases", [])
+
+        # confidence_score のサニタイズ
+        raw = data.get("confidence_score")
+        try:
+            score = float(raw)
+            if not (0.0 < score <= 1.0):
+                score = 0.85  # 0.0（未設定）や 1.0 超の場合はデフォルトへ
+        except (TypeError, ValueError):
+            score = 0.85
+        data["confidence_score"] = score
+
+        # timestamp が未設定の場合は補完
+        if "timestamp" not in data:
+            data["timestamp"] = datetime.now().isoformat()
+
+        return data
 
 
 class MockLVMAdapter(LVMAdapter):
@@ -162,18 +188,19 @@ class OpenAIVisionAdapter(LVMAdapter):
         image_base64 = base64.b64encode(image_data).decode()
         
         prompt = """
-Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
+Analyze this Ficus retusa (ガジュマル) plant image and respond ONLY with valid JSON (no markdown, no explanation):
 {
-    "overall_health": "excellent/good/fair/poor/critical",
-    "leaf_condition": "vibrant/healthy/stressed/diseased/wilted",
-    "growth_stage": "seedling/juvenile/mature/flowering/fruiting",
-    "confidence_score": 0.0-1.0,
-    "leaf_color": "description",
-    "visible_diseases": ["list"],
-    "recommendations": ["care tips"]
+    "overall_health": "<one of: excellent, good, fair, poor, critical>",
+    "leaf_condition": "<one of: vibrant, healthy, stressed, diseased, wilted>",
+    "growth_stage": "<one of: seedling, juvenile, mature, flowering, fruiting>",
+    "confidence_score": <float between 0.1 and 1.0>,
+    "leaf_color": "<describe the leaf color>",
+    "visible_diseases": ["<issue1>", "<issue2>"],
+    "health_notes": "<brief summary>",
+    "recommendations": ["<tip1>", "<tip2>"]
 }
 """
-        
+
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -195,13 +222,16 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
         import re
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
         try:
-            return json.loads(json_match.group() if json_match else response_text)
+            result = json.loads(json_match.group() if json_match else response_text)
+            return self._normalize_llm_response(result)
         except (json.JSONDecodeError, ValueError):
             return {
                 "overall_health": "fair",
                 "leaf_condition": "stressed",
                 "growth_stage": "unknown",
                 "confidence_score": 0.0,
+                "detected_objects": [],
+                "visible_diseases": [],
                 "health_notes": "LLM response could not be parsed",
                 "recommendations": [],
                 "timestamp": datetime.now().isoformat(),
@@ -243,19 +273,19 @@ class LMStudioAdapter(LVMAdapter):
         image_base64 = base64.b64encode(image_data).decode()
         
         prompt = """
-Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
+Analyze this Ficus retusa (ガジュマル) plant image and respond ONLY with valid JSON (no markdown, no explanation):
 {
-    "overall_health": "excellent/good/fair/poor/critical",
-    "leaf_condition": "vibrant/healthy/stressed/diseased/wilted",
-    "growth_stage": "seedling/juvenile/mature/flowering/fruiting",
-    "confidence_score": 0.0-1.0,
-    "leaf_color": "description",
-    "visible_diseases": ["list of issues or empty"],
-    "health_notes": "summary of plant health",
-    "recommendations": ["care recommendations"]
+    "overall_health": "<one of: excellent, good, fair, poor, critical>",
+    "leaf_condition": "<one of: vibrant, healthy, stressed, diseased, wilted>",
+    "growth_stage": "<one of: seedling, juvenile, mature, flowering, fruiting>",
+    "confidence_score": <float between 0.1 and 1.0>,
+    "leaf_color": "<describe the leaf color>",
+    "visible_diseases": ["<issue1>", "<issue2>"],
+    "health_notes": "<brief summary>",
+    "recommendations": ["<tip1>", "<tip2>"]
 }
 """
-        
+
         try:
             response = await client.chat.completions.create(
                 model=self.model,
@@ -276,20 +306,23 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond with JSON:
                 max_tokens=1024,
                 temperature=0.7,
             )
-            
+
             response_text = response.choices[0].message.content or ""
 
             # JSON部分を抽出（マークダウンコード等でラップされている場合）
             import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             try:
-                return json.loads(json_match.group() if json_match else response_text)
+                result = json.loads(json_match.group() if json_match else response_text)
+                return self._normalize_llm_response(result)
             except (json.JSONDecodeError, ValueError):
                 return {
                     "overall_health": "fair",
                     "leaf_condition": "stressed",
                     "growth_stage": "unknown",
                     "confidence_score": 0.0,
+                    "detected_objects": [],
+                    "visible_diseases": [],
                     "health_notes": "LLM response could not be parsed",
                     "recommendations": [],
                     "timestamp": datetime.now().isoformat(),

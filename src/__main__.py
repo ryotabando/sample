@@ -135,7 +135,7 @@ async def difference_analyze_plants(args):
     container = Container()
 
     if container.difference_analysis_adapter is None:
-        print("❌ diff requires LVM_SERVICE=yolo_hybrid in .env")
+        print("❌ diff requires LVM_SERVICE=lm_studio, openai, or yolo_hybrid in .env")
         sys.exit(1)
 
     # リクエストを作成
@@ -289,7 +289,7 @@ async def scan_images(args) -> None:
 
     container = Container()
     if container.difference_analysis_adapter is None:
-        print("❌ scan requires LVM_SERVICE=yolo_hybrid in .env")
+        print("❌ scan requires LVM_SERVICE=lm_studio, openai, or yolo_hybrid in .env")
         sys.exit(1)
 
     for old_image, new_image in pairs:
