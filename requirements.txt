@@ -1,0 +1,28 @@
+# Core
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Image Processing
+pillow>=10.0.0
+
+# YOLO (Optional - for high-accuracy detection)
+ultralytics>=8.0.0
+
+# CLI
+click>=8.1.0
+typer>=0.9.0
+
+# LVM APIs (Optional)
+openai>=1.3.0
+google-generativeai>=0.3.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Code Quality
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+isort>=5.12.0
