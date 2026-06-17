@@ -272,24 +272,53 @@ class LMStudioAdapter(LVMAdapter):
         import base64
         image_base64 = base64.b64encode(image_data).decode()
         
+        system_prompt = (
+            "You are an expert botanist specializing in Ficus retusa (ガジュマル/Gajumaru). "
+            "Carefully observe the plant image and provide a precise, structured health and growth assessment. "
+            "Base your judgment only on visible evidence in the image. "
+            "Respond ONLY with valid JSON — no markdown fences, no explanation."
+        )
+
         prompt = """
-Analyze this Ficus retusa (ガジュマル) plant image and respond ONLY with valid JSON (no markdown, no explanation):
-{
-    "overall_health": "<one of: excellent, good, fair, poor, critical>",
-    "leaf_condition": "<one of: vibrant, healthy, stressed, diseased, wilted>",
-    "growth_stage": "<one of: seedling, juvenile, mature, flowering, fruiting>",
-    "confidence_score": <float between 0.1 and 1.0>,
-    "leaf_color": "<describe the leaf color>",
-    "visible_diseases": ["<issue1>", "<issue2>"],
-    "health_notes": "<brief summary>",
-    "recommendations": ["<tip1>", "<tip2>"]
-}
-"""
+        Examine this Ficus retusa (ガジュマル) image closely and fill in the following JSON.
+        For each field, look for the specific visual indicators listed.
+
+        Visual indicators to check:
+        - Leaf color: deep glossy green = excellent, pale/yellowish = stressed, brown patches = diseased
+        - Leaf texture: firm/glossy = healthy, limp/wrinkled = wilted or water-stressed
+        - New growth: small bright-green buds or unfurling leaves at branch tips indicate active growth
+        - Aerial roots: thick, visible roots above soil = mature established plant
+        - Trunk/base: firm, smooth bark = healthy; soft, discolored, or mushy = root rot risk
+        - Soil surface: white crust = mineral buildup; very dry/cracked = underwatered; soggy = overwatered
+        - Pot fit: roots emerging from drainage holes or circling the surface = pot-bound
+
+        Respond ONLY with this JSON (no markdown, no extra text):
+        {
+            "overall_health": "<excellent|good|fair|poor|critical>",
+            "leaf_condition": "<vibrant|healthy|stressed|diseased|wilted>",
+            "growth_stage": "<seedling|juvenile|mature|pot-bound>",
+            "new_leaves_visible": <true|false>,
+            "aerial_roots_visible": <true|false>,
+            "trunk_condition": "<healthy|soft|discolored|unknown>",
+            "soil_condition": "<moist|dry|waterlogged|unknown>",
+            "pot_crowded": <true|false>,
+            "leaf_color": "<describe precisely>",
+            "visible_diseases": ["<issue1>"],
+            "growth_notes": "<1-2 sentences on growth activity observed>",
+            "health_notes": "<1-2 sentences on overall health evidence>",
+            "recommendations": ["<specific tip1>", "<specific tip2>", "<specific tip3>"],
+            "confidence_score": <float 0.1-1.0>
+        }
+        """
 
         try:
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
                     {
                         "role": "user",
                         "content": [
@@ -304,7 +333,7 @@ Analyze this Ficus retusa (ガジュマル) plant image and respond ONLY with va
                     }
                 ],
                 max_tokens=1024,
-                temperature=0.7,
+                temperature=0.1,
             )
 
             response_text = response.choices[0].message.content or ""
@@ -350,20 +379,20 @@ class MockDiaryAdapter(DiaryAdapter):
         
         health = analysis_data.get("overall_health", "不明")
         return f"""
-【ガジュマル観察日記】
-
-本日のガジュマルは{health}な状態を保っています。
-
-葉の様子も良好で、光合成が活発に行われているようです。
-光沢感もあり、元気そうです。
-
-【本日のケアアドバイス】
-- 朝日をしっかり当てる
-- 土が乾いたら水やりする
-- 定期的に液肥を与える
-
-次のチェックは1週間後の予定です。
-"""
+        【ガジュマル観察日記】
+        
+        本日のガジュマルは{health}な状態を保っています。
+        
+        葉の様子も良好で、光合成が活発に行われているようです。
+        光沢感もあり、元気そうです。
+        
+        【本日のケアアドバイス】
+        - 朝日をしっかり当てる
+        - 土が乾いたら水やりする
+        - 定期的に液肥を与える
+        
+        次のチェックは1週間後の予定です。
+        """
 
 
 # ========== Repository Adapters (リポジトリアダプター) ==========
@@ -657,35 +686,59 @@ class LLMTextGeneratorAdapter(DiaryGenerationPort):
             persistent = analysis_data.get("persistent_issues", [])
 
             prompt = f"""
-以下の植物差分解析結果をもとに、日本語で詳しい観察日記を書いてください。
+            以下の植物差分解析結果をもとに、日本語で詳しい観察日記を書いてください。
 
-差分解析データ:
-- 前回の健康状態: {old_health} → 今回: {new_health}
-- 健康状態の変化: {health_change}
-- 葉の状態変化: {leaf_change}
-- 新たに検出された問題: {', '.join(new_issues) if new_issues else 'なし'}
-- 解決した問題: {', '.join(resolved) if resolved else 'なし'}
-- 継続中の問題: {', '.join(persistent) if persistent else 'なし'}
+            差分解析データ:
+            - 前回の健康状態: {old_health} → 今回: {new_health}
+            - 健康状態の変化: {health_change}
+            - 葉の状態変化: {leaf_change}
+            - 新たに検出された問題: {', '.join(new_issues) if new_issues else 'なし'}
+            - 解決した問題: {', '.join(resolved) if resolved else 'なし'}
+            - 継続中の問題: {', '.join(persistent) if persistent else 'なし'}
 
-前回からの変化に注目しながら、植物を世話する人の目線で記辺ってください。
-現在の観察、変化の評価、ケアの推奨、下回のケア予定を含めて3～5段落で簡潔にまとめてください。
-"""
+            前回からの変化に注目しながら、植物を世話する人の目線で記辺ってください。
+            現在の観察、変化の評価、ケアの推奨、下回のケア予定を含めて3～5段落で簡潔にまとめてください。
+            """
         else:
             health = analysis_data.get("overall_health", "不明")
-            detected = analysis_data.get("detected_objects", [])
             leaf_condition = analysis_data.get("leaf_condition", "不明")
+            growth_stage = analysis_data.get("growth_stage", "不明")
+            leaf_color = analysis_data.get("leaf_color", "")
+            new_leaves = analysis_data.get("new_leaves_visible", False)
+            aerial_roots = analysis_data.get("aerial_roots_visible", False)
+            trunk = analysis_data.get("trunk_condition", "不明")
+            soil = analysis_data.get("soil_condition", "不明")
+            pot_crowded = analysis_data.get("pot_crowded", False)
+            growth_notes = analysis_data.get("growth_notes", "")
+            health_notes = analysis_data.get("health_notes", "")
+            issues = analysis_data.get("visible_diseases", []) or analysis_data.get("detected_objects", [])
+            recs = analysis_data.get("recommendations", [])
 
             prompt = f"""
-以下の植物解析データをもとに、日本語で詳しい観察日記を書いてください。
-
-解析データ:
-- 健康状態: {health}
-- 葉の状態: {leaf_condition}
-- 検出された問題: {', '.join(detected) if detected else 'なし'}
-
-植物を世話する人の目線で記辺ってください。
-現在の観察、健康状態の評価、ケアの推奨、次回のケア予定を含めて3～5段落で簡潔にまとめてください。
-"""
+            以下のガジュマル（Ficus retusa）解析データをもとに、日本語で詳しい観察日記を書いてください。
+            
+            【解析データ】
+            - 総合健康状態: {health}
+            - 葉の状態: {leaf_condition}（色: {leaf_color if leaf_color else '不明'}）
+            - 成長ステージ: {growth_stage}
+            - 新芽の確認: {'あり' if new_leaves else 'なし'}
+            - 気根の確認: {'あり' if aerial_roots else 'なし'}
+            - 幹・根元の状態: {trunk}
+            - 土壌の状態: {soil}
+            - 根詰まりの兆候: {'あり' if pot_crowded else 'なし'}
+            - 成長に関する観察: {growth_notes if growth_notes else '不明'}
+            - 健康に関する観察: {health_notes if health_notes else '不明'}
+            - 検出された問題: {', '.join(issues) if issues else 'なし'}
+            - ケア推奨事項: {', '.join(recs) if recs else '不明'}
+            
+            ガジュマルを世話する人の目線で、上記データを根拠にしながら記述してください。
+            ① 今日の観察（見た目・葉・幹・土の様子）
+            ② 成長状況の評価（新芽・気根・根詰まりなど）
+            ③ 健康状態の評価と問題点（あれば原因の推測）
+            ④ 具体的なケアアドバイス（水やり・日照・植え替えなど）
+            ⑤ 次回チェックのポイント
+            の5項目を含め、3〜5段落で日本語で書いてください。
+            """
 
         try:
             response = await client.chat.completions.create(
